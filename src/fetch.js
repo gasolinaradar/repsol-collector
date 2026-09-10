@@ -95,7 +95,16 @@ async function fetchStations(options = {}, hooks = {}) {
 
   const stations = [];
   for (let index = 0; index < totalStations; index += 1) {
-    const normalized = normalizeRepsolStation(rawStations[index]);
+    let normalized;
+    try {
+      normalized = normalizeRepsolStation(rawStations[index]);
+    } catch (err) {
+      logger.warn('Skipped Repsol station with invalid data', {
+        error: err.message,
+        index,
+      });
+      normalized = null;
+    }
     if (normalized) {
       stations.push(normalized);
     }

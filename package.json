@@ -1,6 +1,6 @@
 {
   "name": "@gasolinaradar/repsol-collector",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Collector for the Repsol fuel station finder (Spain) returning normalized fuel stations for enrichment",
   "main": "src/index.js",
   "exports": {
