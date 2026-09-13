@@ -48,30 +48,38 @@ function normalizeOptionalText(value) {
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
+function classifyProductEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return undefined;
+  }
+  const name = normalizeOptionalText(entry.producto);
+  if (!name) {
+    return undefined;
+  }
+  const amount = normalizePrice(entry.precio);
+  if (amount === null) {
+    return { kind: 'service', name };
+  }
+  return { kind: 'fuel', slug: slugifyFuelName(name), amount };
+}
+
 function parseRepsolPrices(products) {
   if (!Array.isArray(products) || products.length === 0) {
     return undefined;
   }
 
-  const prices = products.reduce((acc, entry) => {
-    if (!entry || typeof entry !== 'object') {
-      return acc;
+  const prices = {};
+  for (const entry of products) {
+    const classified = classifyProductEntry(entry);
+    if (
+      classified &&
+      classified.kind === 'fuel' &&
+      classified.slug &&
+      !Object.prototype.hasOwnProperty.call(prices, classified.slug)
+    ) {
+      prices[classified.slug] = classified.amount;
     }
-
-    const productName = cleanText(entry.producto);
-    const slug = slugifyFuelName(productName);
-    if (!slug || Object.prototype.hasOwnProperty.call(acc, slug)) {
-      return acc;
-    }
-
-    const amount = normalizePrice(entry.precio);
-    if (amount === null) {
-      return acc;
-    }
-
-    acc[slug] = amount;
-    return acc;
-  }, {});
+  }
 
   return Object.keys(prices).length > 0 ? prices : undefined;
 }
@@ -81,9 +89,13 @@ function parseRepsolServices(products) {
     return undefined;
   }
 
-  const services = products
-    .map((entry) => (entry && typeof entry === 'object' ? normalizeOptionalText(entry.producto) : undefined))
-    .filter(Boolean);
+  const services = [];
+  for (const entry of products) {
+    const classified = classifyProductEntry(entry);
+    if (classified && classified.kind === 'service') {
+      services.push(classified.name);
+    }
+  }
 
   return services.length > 0 ? services : undefined;
 }

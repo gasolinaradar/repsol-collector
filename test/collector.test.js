@@ -111,7 +111,7 @@ test('fetchStations returns normalized stations with prices, schedule and servic
   assert.equal(g1.schedule, 'Abierto 24 horas');
   assert.deepEqual(g1.location, { type: 'Point', coordinates: [-8.46553056, 40.59533056] });
   assert.deepEqual(g1.prices, { efitec95: 1.799, disele: 1.949 });
-  assert.deepEqual(g1.services, ['Efitec 95', 'Diésel e+', 'Propano 11 Kg', 'Blue+']);
+  assert.deepEqual(g1.services, ['Propano 11 Kg', 'Blue+']);
   assert.ok(g1.lastUpdated instanceof Date);
 
   assert.equal(g2.sourceStationId, 'G002');
@@ -201,6 +201,26 @@ test('parseRepsolServices returns product names', () => {
     'Blue+',
   ]);
   assert.equal(parseRepsolServices([]), undefined);
+});
+
+test('parseRepsolPrices extracts only priced fuel slugs from a mixed productos array', () => {
+  const products = [
+    { producto: 'Efitec 95', precio: 1.799 },
+    { producto: 'Diésel e+', precio: '1,949' },
+    { producto: 'Propano 11 Kg' },
+    { producto: 'Blue+' },
+  ];
+  assert.deepEqual(parseRepsolPrices(products), { efitec95: 1.799, disele: 1.949 });
+});
+
+test('parseRepsolServices extracts only unpriced product names from a mixed productos array', () => {
+  const products = [
+    { producto: 'Efitec 95', precio: 1.799 },
+    { producto: 'Diésel e+', precio: '1,949' },
+    { producto: 'Propano 11 Kg' },
+    { producto: 'Blue+' },
+  ];
+  assert.deepEqual(parseRepsolServices(products), ['Propano 11 Kg', 'Blue+']);
 });
 
 test('formatRepsolSchedule prefers plain text and falls back to day lists', () => {
