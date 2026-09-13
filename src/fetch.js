@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { normalizeRepsolStation } = require('./normalize');
-const { retry } = require('./retry');
+const { retry, isRepsolWafBlock } = require('./retry');
 
 // Repsol public fuel station finder is served from AEM as a map SPA. The map loads every
 // station in one bulk POST to the search middleware endpoint; the response groups all point
@@ -46,10 +46,18 @@ async function fetchStationList(httpClient, logger, searchUrl, tipo, language, t
   const url = `${searchUrl}${searchUrl.includes('?') ? '&' : '?'}${params.toString()}`;
 
   logger.info('Requesting Repsol station list', { url });
-  const response = await httpClient.post(url, null, {
-    headers: BASE_HEADERS,
-    timeout,
-  });
+  let response;
+  try {
+    response = await httpClient.post(url, null, {
+      headers: BASE_HEADERS,
+      timeout,
+    });
+  } catch (error) {
+    if (isRepsolWafBlock(error)) {
+      logger.warn('WAF block detected (HTTP 403) from Repsol search middleware');
+    }
+    throw error;
+  }
 
   const data = response && response.data;
   const eess = data && typeof data === 'object' ? data.eess : undefined;
@@ -83,7 +91,7 @@ async function fetchStations(options = {}, hooks = {}) {
   reportProgress(5, { stage: 'fetching_station_list' });
   const rawStations = await retry(
     () => fetchStationList(httpClient, logger, searchUrl, tipo, language, timeout),
-    { retries, minTimeoutMs: 1000, logger },
+    { retries, minTimeoutMs: options.minTimeoutMs, factor: options.factor, sleep: options.sleep, logger },
   );
   const totalStations = rawStations.length;
   reportProgress(10, { stage: 'station_list_received', stationCount: totalStations });

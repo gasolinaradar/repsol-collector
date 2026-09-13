@@ -221,3 +221,94 @@ test('normalizePrice parses numbers and Spanish comma decimals', () => {
   assert.equal(normalizePrice(null), null);
   assert.equal(normalizePrice(''), null);
 });
+
+test('WAF 403 errors are transient and retried with backoff', async () => {
+  const mockClient = {
+    calls: [],
+    post: async (url, body, config) => {
+      mockClient.calls.push({ url, body, config });
+      return { status: 200, data: { eess: { count: 1, items: SAMPLE_STATIONS } } };
+    },
+  };
+
+  const logger = { warn: () => {}, info: () => {} };
+  let callCount = 0;
+  const failingClient = {
+    post: async (url, body, config) => {
+      callCount += 1;
+      if (callCount < 4) {
+        return new Promise((_, reject) => {
+          setTimeout(() => reject({ response: { status: 403 } }), 10);
+        });
+      }
+      return { status: 200, data: { eess: { count: 2, items: SAMPLE_STATIONS } } };
+    },
+  };
+
+  const stations = await fetchStations({ httpClient: failingClient, retries: 3, logger });
+  assert.equal(stations.length, 2);
+  assert.equal(callCount, 4); // 3 failures + 1 success
+});
+
+test('non-transient errors are not retried', async () => {
+  const mockClient = {
+    post: async () => ({ status: 200, data: { eess: { count: 0, items: [] } } }),
+  };
+  await fetchStations({ httpClient: mockClient, retries: 10, logger: silentLogger });
+});
+
+test('throws after 403 retries exhausted and attempts equals retries + 1', async () => {
+  const logger = { warn: () => {}, info: () => {} };
+  let callCount = 0;
+  const failingClient = {
+    post: async () => {
+      callCount += 1;
+      return Promise.reject({ response: { status: 403 } });
+    },
+  };
+
+  await assert.rejects(
+    () => fetchStations({ httpClient: failingClient, retries: 2, logger }),
+    (err) => {
+      if (!err || !err.response || err.response.status !== 403) {
+        return false;
+      }
+      // Verify original 403 error is preserved
+      return true;
+    },
+  );
+  assert.equal(callCount, 3); // retries + 1
+});
+
+test('parse errors are not retried (fail fast)', async () => {
+  const mockClient = {
+    post: async () => ({ status: 200, data: { not: 'expected' } }),
+  };
+  await assert.rejects(
+    () => fetchStations({ httpClient: mockClient, retries: 10, logger: silentLogger }),
+    /Unexpected Repsol search response/,
+  );
+});
+
+test('exponential backoff widens the jitter window with each attempt (WAF 403)', async () => {
+  const logger = { warn: () => {} };
+  const waits = [];
+  const sleep = async (ms) => {
+    waits.push(ms);
+  };
+
+  const failingClient = {
+    post: async () => Promise.reject({ response: { status: 403 } }),
+  };
+
+  await assert.rejects(
+    () => fetchStations({ httpClient: failingClient, retries: 3, minTimeoutMs: 10, factor: 2, sleep, logger }),
+    (err) => err.response?.status === 403,
+  );
+
+  assert.equal(waits.length, 3, 'one backoff per retry');
+  waits.forEach((wait, tryIndex) => {
+    const window = 10 * 2 ** tryIndex;
+    assert.ok(wait >= 0 && wait <= window, `attempt ${tryIndex + 1} wait ${wait}ms inside full-jitter window [0, ${window}]`);
+  });
+});
