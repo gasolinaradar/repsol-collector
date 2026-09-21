@@ -8,7 +8,12 @@ const {
   formatRepsolSchedule,
   normalizePrice,
 } = require('../src/normalize');
-const { DEFAULT_REPSOL_SEARCH_URL, DEFAULT_TIPO } = require('../src/fetch');
+const {
+  DEFAULT_REPSOL_SEARCH_URL,
+  DEFAULT_TIPO,
+  DEFAULT_MAX_RESPONSE_SIZE,
+  DEFAULT_BATCH_SIZE,
+} = require('../src/fetch');
 
 const silentLogger = { info: () => {}, warn: () => {}, debug: () => {} };
 
@@ -343,4 +348,88 @@ test('exponential backoff widens the jitter window with each attempt (WAF 403)',
     const window = 10 * 2 ** tryIndex;
     assert.ok(wait >= 0 && wait <= window, `attempt ${tryIndex + 1} wait ${wait}ms inside full-jitter window [0, ${window}]`);
   });
+});
+
+test('passes the response size limit to the http client', async () => {
+  const client = createFakeClient();
+  await fetchStations({ httpClient: client, logger: silentLogger });
+  assert.equal(client.calls[0].config.maxContentLength, DEFAULT_MAX_RESPONSE_SIZE);
+  assert.equal(client.calls[0].config.maxResponseSize, DEFAULT_MAX_RESPONSE_SIZE);
+  assert.equal(client.calls[0].config.timeout, 20000);
+});
+
+test('applies a custom response size limit to the http client', async () => {
+  const client = createFakeClient();
+  await fetchStations({ httpClient: client, maxResponseSize: 1234, logger: silentLogger });
+  assert.equal(client.calls[0].config.maxContentLength, 1234);
+  assert.equal(client.calls[0].config.maxResponseSize, 1234);
+});
+
+test('throws without retrying when the response exceeds the station limit', async () => {
+  const tooMany = Array.from({ length: 3 }, () => SAMPLE_STATIONS[0]);
+  let posts = 0;
+  const client = {
+    post: async () => {
+      posts += 1;
+      return { status: 200, data: { eess: { count: 3, items: tooMany } } };
+    },
+  };
+  await assert.rejects(
+    () => fetchStations({ httpClient: client, maxStations: 2, retries: 5, logger: silentLogger }),
+    /exceeds station limit of 2 \(got 3\)/,
+  );
+  assert.equal(posts, 1, 'oversized responses fail fast instead of being retried');
+});
+
+test('translates oversized axios responses into a clear error without retrying', async () => {
+  let posts = 0;
+  const client = {
+    post: async () => {
+      posts += 1;
+      return Promise.reject({ code: 'ERR_FR_TOO_LARGE' });
+    },
+  };
+  await assert.rejects(
+    () => fetchStations({ httpClient: client, retries: 5, logger: silentLogger }),
+    /exceeded response size limit/,
+  );
+  assert.equal(posts, 1, 'buffering-timeout errors fail fast instead of being retried');
+});
+
+test('normalizes in batches and reports each chunk through the onBatch hook', async () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ ...SAMPLE_STATIONS[0], id: `S${i}` }));
+  const client = createFakeClient(many);
+  const batches = [];
+  const stations = await fetchStations(
+    { httpClient: client, batchSize: 5, logger: silentLogger },
+    { reportBatch: (batch) => batches.push(batch) },
+  );
+
+  assert.equal(stations.length, 12);
+  assert.deepEqual(batches.map((batch) => batch.length), [5, 5, 2]);
+  assert.ok(batches.every((batch) => batch.every((s) => s.source === 'repsol')));
+});
+
+test('collector wires the onBatch context hook through to fetchStations', async () => {
+  const collector = createRepsolCollector({
+    httpClient: createFakeClient(),
+    logger: silentLogger,
+  });
+  const batches = [];
+  await collector.fetch({
+    onBatch: (batch) => batches.push(batch),
+  });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].length, 2);
+});
+
+test('custom batchSize is respected by the collector', async () => {
+  const many = Array.from({ length: 10 }, (_, i) => ({ ...SAMPLE_STATIONS[0], id: `S${i}` }));
+  const collector = createRepsolCollector({
+    httpClient: createFakeClient(many),
+    logger: silentLogger,
+    batchSize: DEFAULT_BATCH_SIZE,
+  });
+  const stations = await collector.fetch({});
+  assert.equal(stations.length, 10);
 });

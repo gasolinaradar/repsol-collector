@@ -13,6 +13,13 @@ const DEFAULT_TIPO = '1';
 const DEFAULT_LANGUAGE = 'ES';
 const DEFAULT_TIMEOUT = 20000;
 const DEFAULT_RETRIES = 3;
+const MEGABYTE = 1024 * 1024;
+// The endpoint returns the whole fleet in one POST, so the response is capped to
+// fail fast instead of buffering an oversized body (OOM/timeout) into memory.
+const DEFAULT_MAX_RESPONSE_SIZE = 50 * MEGABYTE;
+// Safety net on the parsed fleet size, valid for any http client (not just axios).
+const DEFAULT_MAX_STATIONS = 10000;
+const DEFAULT_BATCH_SIZE = 500;
 
 const BASE_HEADERS = {
   Accept: 'application/json, text/plain, */*',
@@ -37,7 +44,15 @@ function resolveUrl(urlOption, fallback) {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
-async function fetchStationList(httpClient, logger, searchUrl, tipo, language, timeout) {
+async function fetchStationList(httpClient, options = {}) {
+  const logger = resolveLogger(options.logger);
+  const searchUrl = resolveUrl(options.searchUrl, DEFAULT_REPSOL_SEARCH_URL);
+  const tipo = options.tipo ?? DEFAULT_TIPO;
+  const language = options.language ?? DEFAULT_LANGUAGE;
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT;
+  const maxResponseSize = options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE;
+  const maxStations = options.maxStations ?? DEFAULT_MAX_STATIONS;
+
   const params = new URLSearchParams({
     action: 'search',
     idioma: language,
@@ -51,10 +66,16 @@ async function fetchStationList(httpClient, logger, searchUrl, tipo, language, t
     response = await httpClient.post(url, null, {
       headers: BASE_HEADERS,
       timeout,
+      maxContentLength: maxResponseSize,
+      maxResponseSize,
     });
   } catch (error) {
     if (isRepsolWafBlock(error)) {
       logger.warn('WAF block detected (HTTP 403) from Repsol search middleware');
+    } else if (error && error.code === 'ERR_FR_TOO_LARGE') {
+      throw new Error(
+        `Repsol response exceeded response size limit of ${maxResponseSize} bytes`,
+      );
     }
     throw error;
   }
@@ -65,6 +86,12 @@ async function fetchStationList(httpClient, logger, searchUrl, tipo, language, t
 
   if (!items) {
     throw new Error('Unexpected Repsol search response');
+  }
+
+  if (items.length > maxStations) {
+    throw new Error(
+      `Repsol response exceeds station limit of ${maxStations} (got ${items.length})`,
+    );
   }
 
   logger.info('Received Repsol station list', {
@@ -84,13 +111,27 @@ async function fetchStations(options = {}, hooks = {}) {
   const language = options.language ?? DEFAULT_LANGUAGE;
   const timeout = options.timeout ?? DEFAULT_TIMEOUT;
   const retries = options.retries ?? DEFAULT_RETRIES;
+  const maxResponseSize = options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE;
+  const maxStations = options.maxStations ?? DEFAULT_MAX_STATIONS;
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const reportProgress =
     typeof hooks.reportProgress === 'function' ? hooks.reportProgress : () => {};
+  const reportBatch =
+    typeof hooks.reportBatch === 'function' ? hooks.reportBatch : () => {};
 
   logger.info('Starting Repsol collector fetch');
   reportProgress(5, { stage: 'fetching_station_list' });
   const rawStations = await retry(
-    () => fetchStationList(httpClient, logger, searchUrl, tipo, language, timeout),
+    () =>
+      fetchStationList(httpClient, {
+        logger,
+        searchUrl,
+        tipo,
+        language,
+        timeout,
+        maxResponseSize,
+        maxStations,
+      }),
     { retries, minTimeoutMs: options.minTimeoutMs, factor: options.factor, sleep: options.sleep, logger },
   );
   const totalStations = rawStations.length;
@@ -102,25 +143,35 @@ async function fetchStations(options = {}, hooks = {}) {
   }
 
   const stations = [];
-  for (let index = 0; index < totalStations; index += 1) {
-    let normalized;
-    try {
-      normalized = normalizeRepsolStation(rawStations[index]);
-    } catch (err) {
-      logger.warn('Skipped Repsol station with invalid data', {
-        error: err.message,
-        index,
-      });
-      normalized = null;
-    }
-    if (normalized) {
-      stations.push(normalized);
-    }
+  for (let start = 0; start < totalStations; start += batchSize) {
+    const end = Math.min(start + batchSize, totalStations);
+    const batch = [];
+    for (let index = start; index < end; index += 1) {
+      let normalized;
+      try {
+        normalized = normalizeRepsolStation(rawStations[index]);
+      } catch (err) {
+        logger.warn('Skipped Repsol station with invalid data', {
+          error: err.message,
+          index,
+        });
+        normalized = null;
+      }
+      if (normalized) {
+        batch.push(normalized);
+      }
 
-    const progress = 10 + Math.round(((index + 1) / totalStations) * 90);
-    reportProgress(progress > 100 ? 100 : progress, {
-      stage: 'normalizing_stations',
-      processed: index + 1,
+      const progress = 10 + Math.round(((index + 1) / totalStations) * 90);
+      reportProgress(progress > 100 ? 100 : progress, {
+        stage: 'normalizing_stations',
+        processed: index + 1,
+        total: totalStations,
+      });
+    }
+    stations.push(...batch);
+    reportBatch(batch, {
+      batchIndex: start / batchSize,
+      processed: stations.length,
       total: totalStations,
     });
   }
@@ -135,5 +186,8 @@ module.exports = {
   DEFAULT_REPSOL_SEARCH_URL,
   DEFAULT_TIPO,
   DEFAULT_LANGUAGE,
+  DEFAULT_MAX_RESPONSE_SIZE,
+  DEFAULT_MAX_STATIONS,
+  DEFAULT_BATCH_SIZE,
   BASE_HEADERS,
 };
