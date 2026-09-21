@@ -1,7 +1,7 @@
 const { test, before } = require('node:test');
 const assert = require('node:assert');
 const axios = require('axios');
-const { fetchStationList } = require('../src/fetch');
+const { fetchStationList, fetchStations } = require('../src/fetch');
 const { normalizeRepsolStation } = require('../src/normalize');
 
 const silentLogger = { info: () => {}, warn: () => {}, debug: () => {} };
@@ -16,7 +16,7 @@ let normalized;
 
 before(async () => {
   try {
-    list = await fetchStationList(axios, silentLogger, undefined, undefined, undefined, TIMEOUT);
+    list = await fetchStationList(axios, { logger: silentLogger, timeout: TIMEOUT });
   } catch (error) {
     list = [];
     silentLogger.warn(
@@ -71,4 +71,23 @@ test('real Repsol API: coordinates fall within Spain', () => {
 test('real Repsol API: no duplicate source station ids', () => {
   const ids = normalized.map((station) => station.sourceStationId);
   assert.equal(new Set(ids).size, ids.length, 'sourceStationId must be unique');
+});
+
+test('real Repsol API: bulk response with 500+ stations is handled without timeout', async () => {
+  if (list.length < 500) {
+    silentLogger.warn(`Skipping: expected 500+ raw stations, got ${list.length}`);
+    return;
+  }
+  const started = Date.now();
+  const stations = await fetchStations({
+    httpClient: axios,
+    timeout: TIMEOUT,
+    logger: silentLogger,
+  });
+  const elapsed = Date.now() - started;
+  assert.ok(stations.length >= 500, `expected 500+ normalized stations, got ${stations.length}`);
+  assert.ok(
+    elapsed < 60000,
+    `bulk fetch took ${elapsed}ms, expected well under the 30s request timeout`,
+  );
 });

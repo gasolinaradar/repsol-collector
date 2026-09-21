@@ -7,7 +7,9 @@ function createRepsolCollector(options = {}) {
     async fetch(context = {}) {
       const reportProgress =
         typeof context?.reportProgress === 'function' ? context.reportProgress : () => {};
-      return fetchStations(options, { reportProgress });
+      const reportBatch =
+        typeof context?.onBatch === 'function' ? context.onBatch : () => {};
+      return fetchStations(options, { reportProgress, reportBatch });
     },
   };
 }

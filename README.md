@@ -45,6 +45,31 @@ const collector = createRepsolCollector({
   logger: console,
   searchUrl: 'https://www.repsol.es/bin/repsol/searchmiddleware/station-search.json',
   tipo: '1', // '1' España, '2' Portugal, '1,2' ambos
+  maxResponseSize: 50 * 1024 * 1024, // límite del body JSON (bytes), corta el fetch si se excede
+  maxStations: 10000, // tope de estaciones; falla rápido antes de procesar respuestas gigantes
+  batchSize: 500, // estaciones normalizadas por chunk
+});
+```
+
+### Procesamiento por lotes / Chunked processing
+
+El endpoint devuelve toda la flota en **un único POST** (~3145 estaciones en España).
+Para evitar timeout u OOM en respuestas grandes:
+
+- `maxResponseSize` (default `50 MB`) se pasa a axios como `maxContentLength` /
+  `maxResponseSize`; la petición se aborta sin retry si el body lo supera.
+- `maxStations` (default `10000`) valida el tamaño del listado parseado en
+  cualquier cliente HTTP, no solo axios.
+- `batchSize` (default `500`) normaliza en chunks; cada chunk se entrega al
+  consumidor a través de `context.onBatch(batch, metadata)`:
+
+```js
+const collector = createRepsolCollector({ logger: console });
+await collector.fetch({
+  reportProgress: (percent, metadata) => {},
+  onBatch: (batch, metadata) => {
+    // batch de estaciones ya normalizadas; útil para no acumular la flota en memoria
+  },
 });
 ```
 
