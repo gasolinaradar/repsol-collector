@@ -184,7 +184,7 @@ function normalizeRepsolStation(raw) {
       coordinates: [longitude, latitude],
     },
     prices,
-    lastUpdated: productDate ?? new Date(),
+    lastUpdated: productDate ?? null,
   };
 }
 

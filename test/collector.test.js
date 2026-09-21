@@ -115,6 +115,7 @@ test('fetchStations returns normalized stations with prices, schedule and servic
   assert.ok(g1.lastUpdated instanceof Date);
 
   assert.equal(g2.sourceStationId, 'G002');
+  assert.equal(g2.lastUpdated, null);
   assert.equal(g2.prices, undefined);
   assert.equal(g2.services, undefined);
   assert.equal(g2.schedule, undefined);
@@ -181,6 +182,17 @@ test('normalizeRepsolStation returns null for non-object input and non-Spain', (
   assert.equal(normalizeRepsolStation(null), null);
   assert.equal(normalizeRepsolStation('nope'), null);
   assert.equal(normalizeRepsolStation({ x: 1, y: 2, pais: 'Portugal' }), null);
+});
+
+test('normalizeRepsolStation sets lastUpdated to null when no product date exists', () => {
+  const station = {
+    id: 'G3',
+    x: 1,
+    y: 2,
+    pais: 'España',
+    productos: [{ producto: 'Efitec 95', precio: 1.5 }],
+  };
+  assert.equal(normalizeRepsolStation(station).lastUpdated, null);
 });
 
 test('parseRepsolPrices parses products and tolerates Spanish comma decimals', () => {
